@@ -1,0 +1,239 @@
+// Validation of PML implementation 
+// Suppmementary material to :
+// Garnell, E., DoarÃ©, O., & Rouby, C., (2020). Coupled vibro-acoustic modeling 
+// of a dielectric elastomer loudspeaker. Journal of the Acoustical Society of 
+// America
+// last modified: 24/01/2020
+// An pdf document summarizes the main results of the present code
+
+
+// *********************************  PARAMETERS WITHOUT COUPLING ********************************
+
+int N = 10; // number of elements along the membrane radius
+int Nray = 100; // number of elements along the perimeter for Rayleigh integral
+real rpml = 1; // refinement of the mesh in the PML
+real Dpml = 0.7; // PML thickness
+real L0 = 1; // horizontal distance between membrane and PML
+real H0 = 1; // vertical distance between membrane and PML
+real ee = 0.05; // y coordinate of the lowest border of the smaller mesh.
+
+real phi0 = 400; // PML attenuation parameter. phi0 c'est \theta0 dans le pdf.
+real om = 0.04; // non dimensional frequency at which the response is computed.
+func g = 1.0; // velocity profile on the membrane, g is used without coupling
+//func g = sin(n*pi*x); // velocity profile on the membrane
+
+// *********************************  PARAMETERS WITH COUPLING ********************************
+//The following constants still need to be adjusyed with the features of a real loudspeaker.
+real L=0.00001; // inductance of the coil ([H])
+real R=20; // resistence of the equivalent electric circuit ([ohm])
+real C=0.3; // damping ([N.s/m])
+real E=0.5; // stiffness of the spring ([N/m])
+real M=0.5; //mass of the system ([kg])	
+real l=1; //length of the coil ([m])
+real B=0.4; //Magnetic radial fied created by the permanent magnet ([T])
+real U=2; //Module of the tension at the terminals of the coil ([V])
+// *************************** PML FUNCTIONS ***********************************
+real Rx = 1 + L0; 
+real Ry = H0;
+real xint = 0; //le Rx correspond au r_in, le Ry au z_in.
+real yint = 0;
+
+func sigx = phi0 * (abs(x-xint) - Rx)^2;
+func sigy = phi0 * (abs(y-yint) - Ry)^2;
+
+func rtilde =  abs(x-xint)>Rx? (x - 1i*phi0*(abs(x-xint) - Rx)^3/3 ) :x;
+
+func gammax = abs(x-xint)>Rx? (1 - 1i*sigx) :1.0;
+func gammay = abs(y-yint)>Ry? (1 - 1i*sigy) :1.0;
+
+
+
+// ********************************** MESH *************************************
+// mesh of the whole domain for solving
+
+// labels
+int lSa = 1, lS0 = 2, lpmlint = 3, lcent = 4, lpmlext = 5;               
+
+// mesh borders
+border bo1(t=0,1){x = 1*t; y = 0; label = lSa;};
+border bo2(t=0,1){x = 1 + L0*t; y = 0; label = lS0;};
+border bo3(t=0,1){x = 1 + L0 + Dpml*t; y = 0; label = lpmlext;};
+border bo4(t=0,1){x = 1 + L0 + Dpml; y = t*(H0+Dpml); label = lpmlext;};
+border bo5(t=0,1){x = (1-t)*(1 + L0 + Dpml); y = (H0+Dpml); label = lpmlext;};
+border bo6(t=0,1){x = 0; y = (H0+Dpml)- t*Dpml; label = lcent;};
+border bo7(t=0,1){x = 0; y = H0- t*H0; label = lcent;};
+border bo8(t=0,1){x = 1 + L0 ; y = t*H0; label = lpmlint;};
+border bo9(t=0,1){x = (1-t)*(1 + L0) ; y = H0; label = lpmlint;};
+
+// number of border elements
+int Npml = floor(N*Dpml*rpml);
+int Nl0 = floor(N*L0);
+int NH0 = floor(N*H0);
+int Nl0pml = floor(N*L0*rpml);
+int NH0pml = floor(N*H0*rpml);
+int NNpml = floor(N*rpml);
+
+// build mesh
+mesh Shac;
+Shac = buildmesh( bo1(N) + bo2(Nl0) + bo3(Npml) + bo4(Npml + NH0pml) 
+				+ bo5(Nl0pml +NNpml+ Npml) + bo6(Npml) + bo7(NH0) + bo8(NH0pml)
+				+ bo9(Nl0pml+NNpml), fixedborder = true);
+
+plot(Shac,wait=1);
+
+// define finite element space
+fespace Vhac(Shac,P2);
+
+
+// ************************ plot PML functions ********************************
+/*
+Vhac<complex> Vgammax = gammax;
+Vhac Vgammaxr = real(Vgammax);
+Vhac Vgammaxi = imag(Vgammax);
+Vhac<complex> Vgammay = gammay;
+Vhac Vgammayr = real(Vgammay);
+Vhac Vgammayi = imag(Vgammay);
+Vhac<complex> Vrtildep = rtilde;
+Vhac Vrtildepr = real(Vrtildep);
+Vhac Vrtildepi = imag(Vrtildep);
+
+plot(Vgammaxi, wait =1, fill = 1,dim = 3,value = 1);
+plot(Vgammayi, wait =1, fill = 1,dim = 3,value = 1);
+plot(Vrtildepi, wait =1, fill = 1,dim = 3,value = 1);
+*/
+
+
+//************************** variationnal formulation **************************
+
+//************************** With Coupling**************************
+//Define the matrix which links the vector (X,Q) to (0,U) : T(om)*(X,Q)=(0,U)
+complex I11=-om^2*M+1i*om*C+E;
+complex I12=-1i*B*l*om ;
+complex I21=1i*B*l*om;
+complex I22=-om^2*L+1i*om*R;
+
+
+complex[int,int] T(2,2);
+T=[[I11,I12],[I21,I22]];
+//Definition of the vector (0,U)
+complex [int] S (2);
+S(0)=0;
+S(1)=U;
+// define finite elements functions 
+Vhac<complex> p,q ;
+
+// bilinear form	
+varf varfA (p,q) = 
+  	  int2d(Shac)(   rtilde* ( gammay/gammax*dx(p)*dx(q) 
+							+ gammax/gammay*dy(p)*dy(q) ) )
+	- int2d(Shac)( om^2*rtilde*gammax*gammay*p*q  ) ;	
+
+//new column of the matrix An :
+varf varfC1(p,q)=int1d(Shac,lSa)(om^2*q*x );
+
+//Integral of the pressure over the membrane
+varf varfP (p,q)=int1d(Shac,lSa)(q); 
+
+// build mass matrix and force vector
+matrix<complex> A = varfA(Vhac,Vhac);
+int n=A.n; // Number of rows and columns in the finite element matrix
+complex[int,int] C1 (n,1);
+C1 = varfC1(0,Vhac);
+complex[int,int] R1 (1,n);
+R1=varfP(0,Vhac); 
+
+
+//Define the new finite element matrix An (A new) of the problem : AnPn=Fn
+//Build of the new matrices An and Fn with X and Q as new unknown. 
+complex [int, int] R2(1,n); // Two last rows of zeros under the initial A matrix
+R2=0;
+matrix<complex> A1=[[R1],[R2]];
+matrix <complex>Aa=[[A1,T]]; // Concatenate the matrices A1 and T -> the two last rows of the matrix An
+complex [int,int] C2(n,1); // Last column of zeros of the new matrix An, there are two rows missing which will be add afterwards
+C2=0;
+matrix <complex>Ab=[[A,C1,C2]]; // Concatenate A with the two columns -> sizeof(Ab)=(n,n+2)
+matrix <complex>An=[[Ab],[Aa]]; // Last step in the building of An, concatenate Ab and Aa ->sizeof(An)=(n+2,n+2)
+
+//force vector with coupling
+complex [int] F=varfP(0,Vhac);
+F=0;
+matrix<complex> Fn= [[F],[S]]; // last step in the building of Fn
+
+
+//************************************** SOLVE *********************************
+
+// define solver to invert the matrix A*/
+set(An, solver=UMFPACK);
+matrix <complex> Psol;
+Psol= An^-1*Fn;
+
+
+
+
+// plot solution on the whole mesh 
+//plot(Psol,fill=1, wait = 1, value=1,cmm="Solution on whole mesh");
+
+//************************************** DEBUG *********************************
+/*
+for (int i=0; i<Shac.nbe ;i++) // debug
+	{
+		if (Shac.be(i).label==1)
+		{
+			cout << Shac.be(i)[0] << "Then" << Shac.be(i)[1] << "" << endl;
+		}
+	}
+cout << I11 <<endl;
+cout << I12 <<endl;
+cout << I21 <<endl;
+cout << I22 << endl;
+cout << An.n <<endl;
+cout << An.m <<endl;
+cout << Fn.n <<endl;
+//cout << R1 << endl;
+cout << "Number of boundary elements :" << Shac.nbe << endl; // There are also the other boundaries here, it is not only the membrane
+cout << Shac.be(0).Element << endl;
+matrix <complex> c=2*An^-1;
+cout << An << endl;
+
+/*
+
+
+matrix <complex> Soltest;
+Soltest=An*An;
+//Soltest=An^-1*An^-1;
+
+*/
+
+
+
+// **************************** MESH WITHOUT PMLS ******************************
+// main mesh to compare solution to Rayleigh integral (without the PMLs)
+/*
+// borders
+border co1(t=0,1){x = (1+L0)*t; y = ee;};
+border co2(t=0,1){x = (1+L0); y = ee+t*(H0-ee);};
+border co3(t=0,1){x = (1+L0)*(1-t); y = H0;};
+border co4(t=0,1){x = 0; y = H0-t*(H0-ee);};
+
+// build mesh
+mesh Shcut;
+Shcut = buildmesh( co1(N) + co2(NH0) + co3(N) + co4(NH0) );
+
+// define finite element space
+fespace Vhcut(Shcut,P2);
+
+
+
+// ******************************* PLOTS ***************************************
+
+// interpolate solution on the smaller mesh to compare with Rayleigh
+Vhcut<complex> Psolcut;
+Psolcut = Psol;
+
+// plot FEM solution on the smaller mesh without the PMLs 
+Vhcut PsolRe = real(Psol);
+plot(PsolRe,fill=1, wait = 1, value=1,cmm="FEM solution");
+
+*/
+
+
